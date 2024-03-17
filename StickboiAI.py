@@ -6,6 +6,8 @@ import torch.nn.functional as F
 import math
 from math import *
 
+
+
 def generate_all_possible_uci_moves():
     letters = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']
     numbers = ['1', '2', '3', '4', '5', '6', '7', '8']
@@ -163,11 +165,12 @@ def decideMove(board, model):
     originalBoard = board.fen()
     legal_moves = list(board.legal_moves)
     encodedBoard = NN.encodeBoard(board)#.unsqueeze(0)  # Add a batch dimension
+    encodedBoard = encodedBoard.to("cuda")
     #print(encodedBoard)
 
     # Forward pass through the model to get probabilities and board value
     p, v = model(encodedBoard)
-    p = p.squeeze().detach().numpy()  # Convert tensor to numpy array for easier handling
+    p = p.squeeze().detach().cpu().numpy()  # Convert tensor to numpy array for easier handling
     v = v.item()  # Convert tensor to scalar
 
     # Generate and use move_to_index mapping inside the decideMove function
@@ -223,6 +226,12 @@ def adjust_and_normalize_probs(legal_moves, softmax_probs, all_possible_moves):
 #Self-Training
 trainingBoard = chess.Board()
 model = NN(4672)
+if torch.cuda.is_available():
+    model.to("cuda")
+    device = "cuda"
+else:
+    model.to("cpu")
+    device = "cpu"
 policyCriterion = nn.CrossEntropyLoss()
 valueCriterion = nn.MSELoss()
 steps = 2
@@ -239,7 +248,7 @@ for i in range(steps): #A step is a game, and then a backpropagation
     while not trainingBoard.is_game_over == True:
         move = decideMove(trainingBoard, model)
         legalMoves = list(trainingBoard.legal_moves)
-        state = model.encodeBoard(trainingBoard)
+        state = model.encodeBoard(trainingBoard).to("cuda")
         states.append(state)
         pvalue, vvalue = model.forward(state)
         p.append(pvalue)
@@ -250,7 +259,7 @@ for i in range(steps): #A step is a game, and then a backpropagation
         pvalue_squeezed = pvalue.squeeze()
 
         # Convert the squeezed tensor to a numpy array
-        pvalue_numpy = pvalue_squeezed.detach().numpy()  # Ensure detachment if gradients are not needed
+        pvalue_numpy = pvalue_squeezed.detach().cpu().numpy()  # Ensure detachment if gradients are not needed
         # Map each UCI move to its corresponding softmax probability
         softmax_probs_dict = {universalMoves[i]: prob for i, prob in enumerate(pvalue_numpy)}
         # Adjust and normalize the softmax probabilities for legal moves
@@ -293,9 +302,13 @@ for i in range(steps): #A step is a game, and then a backpropagation
 
     # Compute the regularization loss
     reg_loss = c * l2_norm_squared
-    states_tensor = torch.stack(states)
+    state = model.encodeBoard(trainingBoard)
     pi_tensor = torch.stack(pi)
     z_tensor = torch.tensor(z, dtype=torch.float32).unsqueeze(-1)  # Assuming z is a list of scalar outcomes
+    if torch.cuda.is_available():
+        states_tensor = states_tensor.to("cuda")
+        pi_tensor = pi_tensor.to("cuda")
+        z_tensor = z_tensor.to("cuda")
 
     # Zero the gradients
     optimizer.zero_grad()
@@ -317,31 +330,3 @@ for i in range(steps): #A step is a game, and then a backpropagation
     
 #Finished training, so now, we save the result:
 torch.save(model, 'PancakeAI(Not Very Good).pth')
-
-    
-    
-    
-        
-
-# #PVAI
-# board = chess.Board()
-# while not board.is_game_over():
-#     bestMove = decideMove(board)
-#     print("Best move:", board.san(bestMove))
-#     board.push(bestMove)
-#     print(board)
-#     if board.is_game_over():
-#         break
-#     playerMove = input("Play a move: ")
-#     while True:
-#         try:
-#             move = board.parse_san(playerMove)
-#             if move in board.legal_moves:
-#                 board.push(move)
-#                 print(board)
-#                 break
-#             else:
-#                 print("Not a legal move! Input another")
-#         except ValueError:
-#             print("Not a legal move! Input another")
-#             playerMove = input("Play a move: ")
