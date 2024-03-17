@@ -238,6 +238,7 @@ steps = 2
 universalMoves = generate_all_possible_uci_moves()
 model.train()  # Set the model to training mode
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001)  # Example optimizer, feel free to adjust the learning rate
+startingFen = trainingBoard.fen()
 for i in range(steps): #A step is a game, and then a backpropagation
     states = []
     p = [] #Policy vectors
@@ -327,6 +328,9 @@ for i in range(steps): #A step is a game, and then a backpropagation
 
     # Update model parameters
     optimizer.step()
+    
+    #Reset board
+    trainingBoard.set_fen(startingFen)
     
 #Finished training, so now, we save the result:
 torch.save(model, 'PancakeAI(Not Very Good).pth')
