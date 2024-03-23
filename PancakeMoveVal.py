@@ -5,7 +5,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import random
-
 import math
 from math import *
 
@@ -59,52 +58,9 @@ def encodeBoard(board):
         encoded[67] = int(board.has_kingside_castling_rights(chess.BLACK))
         
         # Encode the turn
-        encoded[68] = 0 if board.turn == chess.WHITE else 1 #0 if it's white's turn, 1 if black's
+        encoded[68] = 1 if board.turn == chess.WHITE else -1 #1 if it's white's turn, -1 if black's (in sigmoid, 1 and 0)
         
         return encoded
-
-# def minimax_ab_time_limit(model, node, depth, alpha, beta, maximizing_player, end_time):
-#     if time.time() > end_time or node.is_game_over():
-#         return evaluate_board(model, encodeBoard(node))
-    
-#     if maximizing_player:
-#         max_eval = float('-inf')
-#         for move in node.legal_moves:
-#             node.push(move)
-#             eval = minimax_ab_time_limit(model, node, depth-1, alpha, beta, False, end_time)
-#             node.pop()
-#             max_eval = max(max_eval, eval)
-#             alpha = max(alpha, eval)
-#             if beta <= alpha:
-#                 break
-#         return max_eval
-#     else:
-#         min_eval = float('inf')
-#         for move in node.legal_moves:
-#             node.push(move)
-#             eval = minimax_ab_time_limit(model, node, depth-1, alpha, beta, True, end_time)
-#             node.pop()
-#             min_eval = min(min_eval, eval)
-#             beta = min(beta, eval)
-#             if beta <= alpha:
-#                 break
-#         return min_eval
-
-# # def iterative_deepening(board, model, time_limit):
-# #     end_time = time.time() + time_limit
-# #     depth = 1
-# #     best_eval = float('-inf')
-# #     best_move = None
-# #     while time.time() < end_time:
-# #         for move in board.legal_moves:
-# #             board.push(move)
-# #             eval = minimax_ab_time_limit(model, board, depth, float('-inf'), float('inf'), False, end_time)
-# #             board.pop()
-# #             if eval > best_eval:
-# #                 best_eval = eval
-# #                 best_move = move
-# #         depth += 1
-# #     return best_move
 
     
 def evaluate_board(model, board):
@@ -114,44 +70,54 @@ def evaluate_board(model, board):
     eval = model.forward(encodedBoard_tensor)  # Pass the tensor to the model
     return eval  # Convert the tensor output back to a Python scalar
 
-def decideMove(board, model, asdf):
+def decideMove(board, model, epoch, total_epochs):
     legalMoves = list(board.legal_moves)
     scores = []
-    for i in range(len(legalMoves)):
-        #Eval
-        board.push(legalMoves[i])
-        encodedBoard = encodeBoard(board)
-        scores.append(float(model.forward(encodedBoard)) - random.uniform(0, 0.1)) #Exploration
-        board.pop()
-    bestScore = max(scores)
-    bestIndex = scores.index(bestScore)
-    return legalMoves[bestIndex]
+    epsilon = max(0.1, 1 - (epoch / total_epochs))  # Decrease epsilon over epochs, minimum of 0.1
+    
+    # Exploration vs. Exploitation
+    if random.random() < epsilon:
+        # Exploration: Choose a random move
+        return random.choice(legalMoves)
+    else:
+        # Exploitation: Choose the best move based on model's prediction
+        for move in legalMoves:
+            board.push(move)
+            encodedBoard = encodeBoard(board)
+            score = float(model.forward(encodedBoard)) - random.uniform(0, 0.1)  # Adding a bit of randomness
+            scores.append(score)
+            board.pop()
+        bestScore = max(scores)
+        bestIndex = scores.index(bestScore)
+        return legalMoves[bestIndex]
         
         
 
 
-def selfPlay(model, optimizer, iterations=10):
-    board = chess.Board()
-    states = []
-    prev_loss = None  # Initialize the previous loss variable
-
-    for i in range(iterations):
-        board.reset()  # Resets to the initial board setup
-        while not board.is_game_over() and len(board.move_stack) < 100: #50 move games only!!!
+def selfPlay(model, optimizer, iterations=1000):
+    total_epochs = iterations
+    for epoch in range(iterations):
+        board = chess.Board()
+        states = []
+        
+        while not board.is_game_over():
             state = encodeBoard(board)
             states.append(state)
-            bestMove = decideMove(board, model, 5)
-            print(board.san(bestMove))
+            bestMove = decideMove(board, model, epoch, total_epochs)
             board.push(bestMove)
 
         # Determine the game result
         result = board.result()
         if result == "1-0":
             result_mapped = 1  # White wins
+            checkmateCount += 1
         elif result == "0-1":
             result_mapped = 0  # Black wins
+            checkmateCount += 1
+        elif result == "1/2-1/2":
+            result_mapped = 0.5  # Draw
         else:
-            result_mapped = 0.5  # Draw/"Timeout"
+            result_mapped = random.randint(0, 1)
 
         # Convert states to a tensor
         states_tensor = torch.stack(states)
@@ -179,9 +145,9 @@ def selfPlay(model, optimizer, iterations=10):
         prev_loss = loss  # Update the previous loss
 
         torch.save(model, "AttemptNN.pth")
-        
+    print(f"Checkmates: {checkmateCount}")
             
      
 model = Eval()
-optimizer = optim.Adam(model.parameters(), lr=0.001)
+optimizer = optim.Adam(model.parameters(), lr=0.001, weight_decay=1e-5)
 selfPlay(model, optimizer, 1000)

@@ -6,8 +6,6 @@ import torch.nn.functional as F
 import math
 from math import *
 
-
-
 def generate_all_possible_uci_moves():
     letters = ['a', 'b', 'c', 'd', 'e', 'f', 'g', 'h']
     numbers = ['1', '2', '3', '4', '5', '6', '7', '8']
@@ -122,7 +120,7 @@ class NN(nn.Module):
         
         return encoded
 
-def treeSearch(board, times):
+def treeSearch(board, times, model):
     original_fen = board.fen()  # Save the original board state
     color = board.turn
     result = 0
@@ -134,14 +132,20 @@ def treeSearch(board, times):
             board.push(legalMoves[i % len(legalMoves)]) #Expansion
         else: #Game Over
             break
-        while not board.is_game_over():
-            board.push(random.choice(list(board.legal_moves)))
-        if (board.result() == "1-0" and color == chess.WHITE) or (board.result() == "0-1" and color == chess.BLACK):
-            result += 1
-        elif (board.result() == "0-1" and color == chess.WHITE) or (board.result() == "1-0" and color == chess.BLACK):
-            result -= 1
-        else:
-            result = 0
+        # while not board.is_game_over():
+        #     board.push(random.choice(list(board.legal_moves)))
+        # if (board.result() == "1-0" and color == chess.WHITE) or (board.result() == "0-1" and color == chess.BLACK):
+        #     result += 1
+        # elif (board.result() == "0-1" and color == chess.WHITE) or (board.result() == "1-0" and color == chess.BLACK):
+        #     result -= 1
+        # else:
+        #     result = 0
+        model.to("cuda")
+        encodedBoard = model.encodeBoard(board)
+        encodedBoard = encodedBoard.to("cuda")
+        p, v = model.forward(encodedBoard)
+        v = float(v)
+        result += round(v)
     board.set_fen(original_fen)
     return result / times
 
@@ -188,14 +192,14 @@ def decideMove(board, model):
 
         # Evaluate the move's score using treeSearch
         board.push(move)  # Make the move on the board
-        score = treeSearch(board, max(int(prob * 100 * abs(v)), 1))  # Adjust treeSearch as needed
+        score = treeSearch(board, max(int(prob * 100 * abs(v)), 1), model)  # Adjust treeSearch as needed
         moveScores.append(score)
         board.set_fen(originalBoard)
 
     # Select the best move based on scores
     if moveScores:
         bestScore = max(moveScores)
-        bestMoves = [move for move, score in zip(legal_moves, moveScores) if score == bestScore]
+        bestMoves = [move for move, score in zip(legal_moves, moveScores) if score == bestScore or score >= (bestScore - 1)] #Add a bit of randomness
         bestMove = random.choice(bestMoves) if bestMoves else None
     else:
         bestMove = None
@@ -222,7 +226,6 @@ def adjust_and_normalize_probs(legal_moves, softmax_probs, all_possible_moves):
     return normalized_probs
 
 
-
 #Self-Training
 trainingBoard = chess.Board()
 model = NN(4672)
@@ -234,7 +237,7 @@ else:
     device = "cpu"
 policyCriterion = nn.CrossEntropyLoss()
 valueCriterion = nn.MSELoss()
-steps = 2
+steps = 1
 universalMoves = generate_all_possible_uci_moves()
 model.train()  # Set the model to training mode
 optimizer = torch.optim.Adam(model.parameters(), lr=0.001)  # Example optimizer, feel free to adjust the learning rate
@@ -246,7 +249,7 @@ for i in range(steps): #A step is a game, and then a backpropagation
     pi = [] #Actual probability distribution
     z = [] #Actual Outcome (to v)
     
-    while not trainingBoard.is_game_over == True:
+    while not (trainingBoard.is_game_over() == True):
         move = decideMove(trainingBoard, model)
         legalMoves = list(trainingBoard.legal_moves)
         state = model.encodeBoard(trainingBoard).to("cuda")
@@ -275,9 +278,14 @@ for i in range(steps): #A step is a game, and then a backpropagation
         # softmax_probs_dict = {move: pvalue_squeezed[i].item() for i, move in enumerate(universalMoves)}
         # Now, you can pass this dictionary to adjust_and_normalize_probs
         pi.append(pi_adjusted)
+        # print(f"\n{trainingBoard}")
         print(trainingBoard.san(move))
-        trainingBoard.push(move)
+        if move in legalMoves:
+            trainingBoard.push(move)
+        else:
+            break
     result = trainingBoard.result()
+    print(result)
     if result == "1-0":
         outcome = 1  # White wins
     elif result == "0-1":
@@ -287,7 +295,7 @@ for i in range(steps): #A step is a game, and then a backpropagation
 
     # Assuming states[] holds the board states in order of play
     for state in states:
-        if state.turn == chess.WHITE:
+        if state[-1].item() == 1:
             z.append(outcome)
         else:  # If it's Black's turn, invert the outcome since -1 is a win for Black
             z.append(-outcome)
@@ -303,8 +311,20 @@ for i in range(steps): #A step is a game, and then a backpropagation
 
     # Compute the regularization loss
     reg_loss = c * l2_norm_squared
-    state = model.encodeBoard(trainingBoard)
-    pi_tensor = torch.stack(pi)
+    state = states[random.randint(5, len(states) - 1)]
+    states_tensor = torch.stack(states).to(device)
+    # Convert `pi` to a tensor
+    num_moves = len(universalMoves)
+    num_states = len(pi)  # Number of board states
+    pi_tensor = torch.zeros(num_states, num_moves)  # Initialize a zero tensor
+
+    for state_index, move_probs in enumerate(pi):
+        i=0
+        for move, prob in move_probs.items():
+            if move in universalMoves:
+                move_index = universalMoves.index(move)
+                pi_tensor[state_index, move_index] = prob
+                i += 1
     z_tensor = torch.tensor(z, dtype=torch.float32).unsqueeze(-1)  # Assuming z is a list of scalar outcomes
     if torch.cuda.is_available():
         states_tensor = states_tensor.to("cuda")
